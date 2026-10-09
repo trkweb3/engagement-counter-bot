@@ -1,21 +1,21 @@
+import os
 import re
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram import Update, LinkPreviewOptions
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
 
-# Stores the configured engagement topic for each group
 engagement_topics = {}
-
-# Stores unique users who submitted an X/Twitter link
 participants = {}
 
 X_LINK_PATTERN = re.compile(
     r"https?://(?:www\.)?(?:x\.com|twitter\.com)/[^\s]+",
-    re.IGNORECASE
+    re.IGNORECASE,
 )
-
-
-def get_group_key(chat_id):
-    return chat_id
 
 
 def get_participants(chat_id):
@@ -26,109 +26,96 @@ def get_participants(chat_id):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Engagement Counter is online.\n\n"
+        "Engagement Counter is online.\n"
         "Use /settopic inside the Engagement topic to configure it."
     )
 
 
 async def settopic(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.is_topic_message:
+    message = update.message
+
+    if not message or not message.is_topic_message:
         await update.message.reply_text(
             "Please use /settopic inside the Engagement topic."
         )
         return
 
     chat_id = update.effective_chat.id
-    topic_id = update.message.message_thread_id
-
-    engagement_topics[chat_id] = topic_id
-
+    engagement_topics[chat_id] = message.message_thread_id
     participants[chat_id] = set()
 
-    await update.message.reply_text(
+    await message.reply_text(
         "✅ Engagement topic configured.\n"
-        "👥 Count reset to 0.\n\n"
-        "Now I will count unique users who submit X/Twitter links here."
+        "👥 Count reset to 0."
     )
 
 
 async def startsession(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
     chat_id = update.effective_chat.id
 
-    if not update.message.is_topic_message:
+    if not message or not message.is_topic_message:
         await update.message.reply_text(
             "Please use /startsession inside the Engagement topic."
         )
         return
 
-    configured_topic = engagement_topics.get(chat_id)
-
-    if configured_topic != update.message.message_thread_id:
-        await update.message.reply_text(
+    if engagement_topics.get(chat_id) != message.message_thread_id:
+        await message.reply_text(
             "This is not the configured Engagement topic."
         )
         return
 
     participants[chat_id] = set()
-
-    await update.message.reply_text(
-        "🟢 Session started!\n"
-        "👥 Participants: 0"
-    )
+    await message.reply_text("🟢 Session started!\n👥 Participants: 0")
 
 
 async def count(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
     chat_id = update.effective_chat.id
 
-    if not update.message.is_topic_message:
+    if not message or not message.is_topic_message:
         await update.message.reply_text(
             "Please use /count inside the Engagement topic."
         )
         return
 
-    configured_topic = engagement_topics.get(chat_id)
-
-    if configured_topic != update.message.message_thread_id:
-        await update.message.reply_text(
+    if engagement_topics.get(chat_id) != message.message_thread_id:
+        await message.reply_text(
             "This is not the configured Engagement topic."
         )
         return
 
-    total = len(get_participants(chat_id))
-
-    await update.message.reply_text(
-        f"👥 Unique participants: {total}"
+    await message.reply_text(
+        f"👥 Unique participants: {len(get_participants(chat_id))}"
     )
 
 
 async def endsession(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
     chat_id = update.effective_chat.id
 
-    if not update.message.is_topic_message:
+    if not message or not message.is_topic_message:
         await update.message.reply_text(
             "Please use /endsession inside the Engagement topic."
         )
         return
 
-    configured_topic = engagement_topics.get(chat_id)
-
-    if configured_topic != update.message.message_thread_id:
-        await update.message.reply_text(
+    if engagement_topics.get(chat_id) != message.message_thread_id:
+        await message.reply_text(
             "This is not the configured Engagement topic."
         )
         return
 
-    total = len(get_participants(chat_id))
-
-    await update.message.reply_text(
-        f"🔴 Session ended.\n\n"
-        f"👥 Total unique participants: {total}"
+    await message.reply_text(
+        f"🔴 Session ended.\n"
+        f"👥 Total unique participants: "
+        f"{len(get_participants(chat_id))}"
     )
 
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-
     participants[chat_id] = set()
 
     await update.message.reply_text(
@@ -136,46 +123,60 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message:
+async def handle_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    message = update.message
+
+    if not message or not message.is_topic_message:
         return
 
-    # Only count messages inside a topic
-    if not update.message.is_topic_message:
+    user = update.effective_user
+    if not user or user.is_bot:
         return
 
     chat_id = update.effective_chat.id
-    topic_id = update.message.message_thread_id
+    topic_id = message.message_thread_id
 
-    # Only count the configured Engagement topic
     if engagement_topics.get(chat_id) != topic_id:
         return
 
-    # Ignore bot messages
-    if update.effective_user and update.effective_user.is_bot:
-        return
+    text = message.text or message.caption or ""
 
-    text = update.message.text or update.message.caption or ""
-
-    # Check for X/Twitter link
     if not X_LINK_PATTERN.search(text):
         return
 
-    user_id = update.effective_user.id
+    # Count this member only once.
     user_set = get_participants(chat_id)
+    is_new_participant = user.id not in user_set
+    user_set.add(user.id)
 
-    # Count each user only once
-    if user_id not in user_set:
-        user_set.add(user_id)
+    try:
+        # Delete the original message and repost without a preview.
+        await message.delete()
 
-        await update.message.reply_text(
-            f"✅ Counted!\n👥 Participants: {len(user_set)}"
+        await context.bot.send_message(
+            chat_id=chat_id,
+            message_thread_id=topic_id,
+            text=text,
+            link_preview_options=LinkPreviewOptions(
+                is_disabled=True
+            ),
         )
+
+        if is_new_participant:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                message_thread_id=topic_id,
+                text=f"✅ Counted!\n👥 Participants: {len(user_set)}",
+            )
+
+    except Exception as error:
+        print(f"Could not process link: {error}")
 
 
 def main():
-    import os
-
     token = os.getenv("BOT_TOKEN")
 
     if not token:
@@ -192,8 +193,8 @@ def main():
 
     app.add_handler(
         MessageHandler(
-            filters.TEXT | filters.CAPTION,
-            handle_message
+            (filters.TEXT | filters.CAPTION) & ~filters.COMMAND,
+            handle_message,
         )
     )
 
